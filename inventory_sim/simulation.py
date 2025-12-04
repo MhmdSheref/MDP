@@ -7,8 +7,8 @@ Separates the simulation loop from the environment and agent implementations.
 import numpy as np
 from typing import List, Tuple, Optional, Any
 from .interfaces import InventoryEnvironment, InventoryAgent
-from .environment import TransitionResult
-from .state import InventoryState
+from .env import TransitionResult
+from .core.state import InventoryState
 
 def run_episode(
     env: InventoryEnvironment,

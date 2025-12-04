@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Optional, Callable, Tuple
 from scipy import stats
 
-from .exceptions import InvalidParameterError, InvalidDemandError
+from ..exceptions import InvalidParameterError, InvalidDemandError
 
 
 class DemandProcess(ABC):

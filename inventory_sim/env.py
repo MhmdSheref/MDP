@@ -15,9 +15,9 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple, Any
 from copy import deepcopy
 
-from .state import InventoryState, SupplierPipeline, create_state_from_config
-from .demand import DemandProcess, PoissonDemand, StochasticLeadTime
-from .costs import (
+from .core.state import InventoryState, SupplierPipeline, create_state_from_config
+from .core.demand import DemandProcess, PoissonDemand, StochasticLeadTime
+from .core.costs import (
     CostParameters, PeriodCosts,
     calculate_purchase_costs, calculate_holding_cost,
     calculate_shortage_cost, calculate_spoilage_cost,

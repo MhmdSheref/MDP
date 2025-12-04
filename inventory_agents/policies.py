@@ -13,10 +13,10 @@ from dataclasses import dataclass
 from typing import Dict, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from .state import InventoryState
-    from .environment import PerishableInventoryMDP
-from .interfaces import InventoryAgent, InventoryEnvironment
-from .exceptions import InvalidParameterError, SupplierNotFoundError
+    from inventory_sim.core.state import InventoryState
+    from inventory_sim.env import PerishableInventoryMDP
+from inventory_sim.interfaces import InventoryAgent, InventoryEnvironment
+from inventory_sim.exceptions import InvalidParameterError, SupplierNotFoundError
 
 
 class BasePolicy(InventoryAgent):

@@ -9,16 +9,19 @@ import numpy as np
 import sys
 sys.path.insert(0, '.')
 
-from perishable_inventory_mdp import (
+from inventory_sim import (
     PerishableInventoryMDP,
     PoissonDemand,
     CostParameters,
-    BaseStockPolicy,
-    TailoredBaseSurgePolicy
+    run_episode
 )
-from perishable_inventory_mdp.environment import create_simple_mdp
-from perishable_inventory_mdp.policies import DoNothingPolicy, ConstantOrderPolicy
-from perishable_inventory_mdp.simulation import run_episode
+from inventory_sim.env import create_simple_mdp
+from inventory_agents import (
+    BaseStockPolicy,
+    TailoredBaseSurgePolicy,
+    DoNothingPolicy,
+    ConstantOrderPolicy
+)
 
 # Import plotting utilities
 try:
@@ -27,7 +30,7 @@ try:
     # Change to 'TkAgg' if you want interactive plots
     matplotlib.use('Agg')
     import matplotlib.pyplot as plt
-    from perishable_inventory_mdp.plotting import (
+    from inventory_sim.plotting import (
         plot_policy_comparison,
         plot_simulation_trace,
         plot_cost_breakdown,
@@ -243,7 +246,7 @@ def run_seasonal_demand():
     print("SEASONAL DEMAND SIMULATION")
     print("=" * 60)
     
-    from perishable_inventory_mdp.demand import SeasonalDemand
+    from inventory_sim.core.demand import SeasonalDemand
     
     # Seasonal demand: higher in "summer" (periods 3-9 of 12-period cycle)
     demand_process = SeasonalDemand(

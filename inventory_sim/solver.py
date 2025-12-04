@@ -15,9 +15,9 @@ from typing import Dict, List, Tuple, Optional, Callable
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-from .state import InventoryState
-from .environment import PerishableInventoryMDP
-from .policies import BasePolicy
+from .core.state import InventoryState
+from .env import PerishableInventoryMDP
+from .interfaces import InventoryAgent
 
 
 @dataclass
@@ -278,7 +278,7 @@ class PolicyIteration:
     def solve(
         self,
         initial_states: List[InventoryState],
-        initial_policy: Optional[BasePolicy] = None,
+        initial_policy: Optional[InventoryAgent] = None,
         action_space: Optional[List[Dict[int, float]]] = None
     ) -> SolverResult:
         """
@@ -297,7 +297,7 @@ class PolicyIteration:
         for state in initial_states:
             state_key = state.to_tuple()
             if initial_policy is not None:
-                policy[state_key] = initial_policy.get_action(state, self.mdp)
+                policy[state_key] = initial_policy.act(state, self.mdp)
             else:
                 policy[state_key] = {s: 0.0 for s in state.pipelines.keys()}
         
@@ -343,7 +343,7 @@ class PolicyIteration:
         )
 
 
-class SolvedPolicy(BasePolicy):
+class SolvedPolicy(InventoryAgent):
     """
     Policy wrapper that uses a solved policy mapping.
     
@@ -359,10 +359,10 @@ class SolvedPolicy(BasePolicy):
         self.policy_dict = policy_dict
         self.default_action = default_action or {}
     
-    def get_action(
+    def act(
         self,
         state: InventoryState,
-        mdp: PerishableInventoryMDP
+        env: PerishableInventoryMDP
     ) -> Dict[int, float]:
         state_key = state.to_tuple()
         
@@ -400,7 +400,7 @@ class ApproximateDynamicProgramming:
     def fit(
         self,
         initial_states: List[InventoryState],
-        policy: BasePolicy
+        policy: InventoryAgent
     ) -> np.ndarray:
         """
         Learn value function weights via TD(0) learning.
@@ -423,7 +423,7 @@ class ApproximateDynamicProgramming:
                 features = self.feature_fn(state)
                 current_value = np.dot(self.weights, features)
                 
-                action = policy.get_action(state, self.mdp)
+                action = policy.act(state, self.mdp)
                 result = self.mdp.step(state, action)
                 
                 next_features = self.feature_fn(result.next_state)

@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Tuple
 from copy import deepcopy
 
-from .exceptions import (
+from ..exceptions import (
     StateValidationError, NegativeInventoryError, InvalidParameterError
 )
 
