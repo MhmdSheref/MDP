@@ -238,9 +238,19 @@ class CurriculumCallback(BaseCallback):
         self._set_environment(new_level)
     
     def _set_environment(self, complexity: str) -> None:
-        """Set training environment for given complexity."""
+        """Set training environment for given complexity.
+        
+        Important: After calling set_env(), we must reset _last_obs
+        to prevent 'No previous observation was provided' errors.
+        """
         new_env = self.env_factory(complexity)
         self.model.set_env(new_env)
+        
+        # CRITICAL: Reset the environment and update model's internal observation
+        # This prevents the "No previous observation was provided" assertion error
+        self.model._last_obs = new_env.reset()
+        # Also need to reset these internal buffers for on-policy algorithms
+        self.model._last_episode_starts = np.ones((new_env.num_envs,), dtype=bool)
         
         if self.verbose > 0:
             print(f"Curriculum: Set environment to {complexity}")
