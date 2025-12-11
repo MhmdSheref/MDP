@@ -39,5 +39,30 @@
         "eval_freq": 10000,
         "n_eval_episodes": 10,
         "deterministic": true
+    },
+    "training_v2_params": {
+        "total_timesteps": 5000000,
+        "initial_learning_rate": 0.0003,
+        "final_learning_rate": 0.0,
+        "initial_entropy_coef": 0.01,
+        "final_entropy_coef": 0.001,
+        "curriculum_enabled": true,
+        "curriculum_thresholds": {
+            "simple": -5.0,
+            "moderate": -8.0,
+            "complex": -12.0
+        },
+        "n_envs": 8,
+        "episode_length": 500,
+        "checkpoint_freq": 100000,
+        "eval_freq": 50000,
+        "benchmark_freq": 100000,
+        "seed": 42,
+        "policy_kwargs": {
+            "net_arch": [
+                256,
+                256
+            ]
+        }
     }
 }

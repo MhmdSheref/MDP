@@ -473,3 +473,237 @@ def create_simple_mdp(
         cost_params=cost_params
     )
 
+
+class EnhancedPerishableInventoryMDP(PerishableInventoryMDP):
+    """
+    Enhanced MDP with supplier rejection and crisis support.
+    
+    Extends PerishableInventoryMDP to add:
+    - Supplier order rejection based on crisis state
+    - Crisis state transitions during simulation
+    - Contract support for discounts/penalties
+    
+    Attributes:
+        crisis_process: Optional CrisisProcess for crisis state management
+        rejection_probs: Dict of base rejection probabilities per supplier
+    """
+    
+    def __init__(
+        self,
+        shelf_life: int,
+        suppliers: List[Dict],
+        demand_process: DemandProcess,
+        cost_params: CostParameters,
+        stochastic_lead_times: Optional[Dict[int, StochasticLeadTime]] = None,
+        lost_sales: bool = False,
+        crisis_process: Optional['CrisisProcess'] = None,
+        enable_rejection: bool = False
+    ):
+        super().__init__(
+            shelf_life=shelf_life,
+            suppliers=suppliers,
+            demand_process=demand_process,
+            cost_params=cost_params,
+            stochastic_lead_times=stochastic_lead_times,
+            lost_sales=lost_sales
+        )
+        
+        self.crisis_process = crisis_process
+        self.enable_rejection = enable_rejection
+        
+        # Extract rejection probabilities from suppliers
+        self.rejection_probs = {}
+        for supplier in suppliers:
+            sid = supplier['id']
+            self.rejection_probs[sid] = supplier.get('rejection_prob', 0.0)
+    
+    def _should_reject_order(self, supplier_id: int) -> bool:
+        """
+        Determine if a supplier order should be rejected.
+        
+        Rejection probability combines base supplier probability with
+        crisis-induced disruption.
+        """
+        if not self.enable_rejection:
+            return False
+        
+        base_prob = self.rejection_probs.get(supplier_id, 0.0)
+        
+        if self.crisis_process is not None:
+            # Crisis increases rejection probability
+            crisis_prob = self.crisis_process.get_supply_disruption_prob()
+            # Combined probability: P(reject) = base + crisis - base*crisis
+            combined = base_prob + crisis_prob - base_prob * crisis_prob
+            combined = min(0.95, combined)  # Cap at 95%
+            return np.random.random() < combined
+        
+        return np.random.random() < base_prob
+    
+    def step(
+        self,
+        state: InventoryState,
+        action: Dict[int, float],
+        demand: Optional[float] = None
+    ) -> TransitionResult:
+        """
+        Execute one step with enhanced features.
+        
+        Extends base step() to:
+        1. Apply supplier rejection to orders
+        2. Transition crisis state
+        3. Modulate demand based on crisis
+        """
+        # Update crisis state if process exists
+        if self.crisis_process is not None:
+            self.crisis_process.sample_transition()
+            
+            # Apply crisis demand multiplier if using CompositeDemand
+            if state.exogenous_state is not None and len(state.exogenous_state) >= 2:
+                state.exogenous_state[1] = float(self.crisis_process.current_state)
+        
+        # Apply rejection logic to modify action
+        effective_action = {}
+        rejected_orders = {}
+        
+        for supplier_id, order_qty in action.items():
+            if order_qty > 0 and self._should_reject_order(supplier_id):
+                rejected_orders[supplier_id] = order_qty
+                effective_action[supplier_id] = 0.0
+            else:
+                effective_action[supplier_id] = order_qty
+        
+        # Call parent step with effective action
+        result = super().step(state, effective_action, demand)
+        
+        # Track rejected orders in result (could extend TransitionResult later)
+        # For now, add to costs as "emergency sourcing cost" if needed
+        if rejected_orders:
+            # Could add rejection penalty here
+            pass
+        
+        return result
+    
+    def create_initial_state(
+        self,
+        initial_inventory: Optional[np.ndarray] = None,
+        initial_backorders: float = 0.0
+    ) -> InventoryState:
+        """Create initial state with crisis initialization."""
+        state = super().create_initial_state(initial_inventory, initial_backorders)
+        
+        # Initialize exogenous state with crisis level
+        if self.crisis_process is not None:
+            crisis_level = self.crisis_process.current_state
+            if state.exogenous_state is None:
+                state.exogenous_state = np.array([0.0, float(crisis_level)])
+            elif len(state.exogenous_state) < 2:
+                state.exogenous_state = np.array([
+                    state.exogenous_state[0] if len(state.exogenous_state) > 0 else 0.0,
+                    float(crisis_level)
+                ])
+            else:
+                state.exogenous_state[1] = float(crisis_level)
+        
+        return state
+
+
+def create_enhanced_mdp(
+    shelf_life: int = 5,
+    num_suppliers: int = 2,
+    mean_demand: float = 10.0,
+    fast_lead_time: int = 1,
+    slow_lead_time: int = 3,
+    fast_cost: float = 2.0,
+    slow_cost: float = 1.0,
+    enable_crisis: bool = False,
+    crisis_probability: float = 0.05,
+    enable_rejection: bool = False,
+    fast_rejection_prob: float = 0.0,
+    slow_rejection_prob: float = 0.0,
+    demand_type: str = "stationary"
+) -> EnhancedPerishableInventoryMDP:
+    """
+    Factory function to create an enhanced MDP with crisis/rejection support.
+    
+    Args:
+        shelf_life: Number of expiry buckets
+        num_suppliers: 1 or 2 suppliers
+        mean_demand: Mean demand rate
+        fast_lead_time: Lead time for fast supplier
+        slow_lead_time: Lead time for slow supplier
+        fast_cost: Unit cost for fast supplier
+        slow_cost: Unit cost for slow supplier
+        enable_crisis: Whether to enable crisis state transitions
+        crisis_probability: Probability of transitioning to crisis
+        enable_rejection: Whether to enable supplier rejection
+        fast_rejection_prob: Base rejection probability for fast supplier
+        slow_rejection_prob: Base rejection probability for slow supplier
+        demand_type: "stationary", "seasonal", "spiky", "composite"
+    
+    Returns:
+        Configured EnhancedPerishableInventoryMDP
+    """
+    from .demand import create_demand_scenario, CompositeDemand
+    from .crisis import create_crisis_process
+    
+    suppliers = [
+        {
+            "id": 0,
+            "lead_time": fast_lead_time,
+            "unit_cost": fast_cost,
+            "fixed_cost": 0.0,
+            "capacity": 100,
+            "moq": 1,
+            "rejection_prob": fast_rejection_prob
+        },
+        {
+            "id": 1,
+            "lead_time": slow_lead_time,
+            "unit_cost": slow_cost,
+            "fixed_cost": 0.0,
+            "capacity": 100,
+            "moq": 1,
+            "rejection_prob": slow_rejection_prob
+        }
+    ]
+    
+    if num_suppliers == 1:
+        suppliers = [suppliers[0]]
+    
+    # Create demand process
+    if demand_type == "composite" and enable_crisis:
+        demand_process = CompositeDemand(
+            mean_demand,
+            seasonality_amplitude=0.2,
+            spike_prob=0.05,
+            spike_multiplier=2.0
+        )
+    else:
+        demand_process = create_demand_scenario(mean_demand, demand_type)
+    
+    cost_params = CostParameters.age_dependent_holding(
+        shelf_life=shelf_life,
+        base_holding=0.5,
+        age_premium=0.5,
+        shortage_cost=10.0,
+        spoilage_cost=5.0
+    )
+    
+    # Create crisis process if enabled
+    crisis_process = None
+    if enable_crisis:
+        crisis_process = create_crisis_process(
+            crisis_probability=crisis_probability,
+            recovery_rate=0.2,
+            severity="moderate"
+        )
+    
+    return EnhancedPerishableInventoryMDP(
+        shelf_life=shelf_life,
+        suppliers=suppliers,
+        demand_process=demand_process,
+        cost_params=cost_params,
+        crisis_process=crisis_process,
+        enable_rejection=enable_rejection
+    )
+

@@ -372,3 +372,316 @@ def create_state_from_config(
     
     return state
 
+
+# =============================================================================
+# MULTI-ITEM STATE EXTENSIONS
+# =============================================================================
+
+
+@dataclass
+class SupplierConfig:
+    """
+    Extended supplier configuration with item coverage.
+    
+    Attributes:
+        supplier_id: Unique supplier identifier
+        lead_time: Number of periods for delivery
+        unit_cost: Per-unit cost for orders
+        fixed_cost: Fixed cost per order
+        capacity: Maximum order quantity per period
+        moq: Minimum order quantity
+        items_supplied: Set of item IDs this supplier can provide
+        rejection_prob: Base probability of order rejection
+    """
+    supplier_id: int
+    lead_time: int
+    unit_cost: float = 1.0
+    fixed_cost: float = 0.0
+    capacity: float = float('inf')
+    moq: int = 1
+    items_supplied: Optional[List[int]] = None  # None = all items
+    rejection_prob: float = 0.0
+    
+    def __post_init__(self):
+        if self.lead_time <= 0:
+            raise InvalidParameterError(f"Lead time must be positive, got {self.lead_time}")
+        if self.unit_cost < 0:
+            raise InvalidParameterError(f"Unit cost must be non-negative, got {self.unit_cost}")
+        if not (0 <= self.rejection_prob <= 1):
+            raise InvalidParameterError(
+                f"Rejection probability must be in [0, 1], got {self.rejection_prob}"
+            )
+    
+    def supplies_item(self, item_id: int) -> bool:
+        """Check if this supplier supplies the given item."""
+        if self.items_supplied is None:
+            return True  # Supplies all items
+        return item_id in self.items_supplied
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for compatibility with existing API."""
+        return {
+            'id': self.supplier_id,
+            'lead_time': self.lead_time,
+            'unit_cost': self.unit_cost,
+            'fixed_cost': self.fixed_cost,
+            'capacity': self.capacity,
+            'moq': self.moq,
+            'items_supplied': self.items_supplied,
+            'rejection_prob': self.rejection_prob
+        }
+
+
+@dataclass
+class ItemConfig:
+    """
+    Configuration for a single item.
+    
+    Attributes:
+        item_id: Unique item identifier
+        shelf_life: Number of expiry buckets for this item
+        name: Human-readable item name
+        demand_multiplier: Multiplier for base demand (for item-specific demand)
+    """
+    item_id: int
+    shelf_life: int
+    name: str = ""
+    demand_multiplier: float = 1.0
+    
+    def __post_init__(self):
+        if self.shelf_life <= 0:
+            raise InvalidParameterError(f"Shelf life must be positive, got {self.shelf_life}")
+        if self.demand_multiplier < 0:
+            raise InvalidParameterError(
+                f"Demand multiplier must be non-negative, got {self.demand_multiplier}"
+            )
+
+
+@dataclass
+class MultiItemInventoryState:
+    """
+    State for multi-item perishable inventory.
+    
+    Extends the single-item InventoryState to support multiple products.
+    
+    Attributes:
+        items: Dictionary of item configurations {item_id: ItemConfig}
+        inventory: Dictionary of inventory by item {item_id: np.ndarray by expiry}
+        pipelines: Dict of pipelines by (item_id, supplier_id)
+        backorders: Dictionary of backorders by item {item_id: float}
+        
+        suppliers: Dictionary of supplier configurations {supplier_id: SupplierConfig}
+        
+        crisis_state: Current crisis level (0=normal, 1=elevated, 2=crisis)
+        time_step: Current time period
+        exogenous_state: External state array [time, crisis_level, ...]
+    """
+    items: Dict[int, ItemConfig] = field(default_factory=dict)
+    inventory: Dict[int, np.ndarray] = field(default_factory=dict)
+    pipelines: Dict[Tuple[int, int], SupplierPipeline] = field(default_factory=dict)
+    backorders: Dict[int, float] = field(default_factory=dict)
+    
+    suppliers: Dict[int, SupplierConfig] = field(default_factory=dict)
+    
+    crisis_state: int = 0
+    time_step: int = 0
+    exogenous_state: Optional[np.ndarray] = None
+    
+    def __post_init__(self):
+        # Initialize backorders for all items
+        for item_id in self.items:
+            if item_id not in self.backorders:
+                self.backorders[item_id] = 0.0
+            if item_id not in self.inventory:
+                shelf_life = self.items[item_id].shelf_life
+                self.inventory[item_id] = np.zeros(shelf_life, dtype=np.float64)
+    
+    @property
+    def num_items(self) -> int:
+        """Number of items in the system."""
+        return len(self.items)
+    
+    @property
+    def num_suppliers(self) -> int:
+        """Number of suppliers in the system."""
+        return len(self.suppliers)
+    
+    def get_total_inventory(self, item_id: int) -> float:
+        """Get total on-hand inventory for an item."""
+        if item_id not in self.inventory:
+            return 0.0
+        return np.sum(self.inventory[item_id])
+    
+    def get_total_pipeline(self, item_id: int) -> float:
+        """Get total inventory in transit for an item."""
+        total = 0.0
+        for (iid, sid), pipeline in self.pipelines.items():
+            if iid == item_id:
+                total += pipeline.total_in_pipeline()
+        return total
+    
+    def get_inventory_position(self, item_id: int) -> float:
+        """Get inventory position for an item."""
+        return (
+            self.get_total_inventory(item_id) +
+            self.get_total_pipeline(item_id) -
+            self.backorders.get(item_id, 0.0)
+        )
+    
+    def get_suppliers_for_item(self, item_id: int) -> List[int]:
+        """Get list of supplier IDs that supply the given item."""
+        return [
+            sid for sid, config in self.suppliers.items()
+            if config.supplies_item(item_id)
+        ]
+    
+    def add_arrivals(self, item_id: int, arrivals: float) -> None:
+        """Add arriving inventory to the freshest bucket for an item."""
+        if arrivals < 0:
+            raise InvalidParameterError(f"Arrivals must be non-negative, got {arrivals}")
+        if item_id in self.inventory:
+            self.inventory[item_id][-1] += arrivals
+    
+    def serve_demand_fifo(self, item_id: int, demand: float) -> Tuple[float, float]:
+        """
+        Serve demand for an item using FIFO policy.
+        
+        Returns:
+            Tuple of (sales, new_backorders)
+        """
+        if demand < 0:
+            raise InvalidParameterError(f"Demand must be non-negative, got {demand}")
+        
+        if item_id not in self.inventory:
+            return 0.0, demand
+        
+        inv = self.inventory[item_id]
+        remaining = demand
+        
+        for n in range(len(inv)):
+            take = min(inv[n], remaining)
+            inv[n] -= take
+            remaining -= take
+            if remaining <= 0:
+                break
+        
+        sales = demand - remaining
+        return sales, max(remaining, 0)
+    
+    def age_inventory(self, item_id: int) -> float:
+        """Age inventory for an item and return spoiled quantity."""
+        if item_id not in self.inventory:
+            return 0.0
+        
+        inv = self.inventory[item_id]
+        spoiled = inv[0]
+        self.inventory[item_id] = np.roll(inv, -1)
+        self.inventory[item_id][-1] = 0
+        return spoiled
+    
+    def copy(self) -> 'MultiItemInventoryState':
+        """Create a deep copy of this state."""
+        return MultiItemInventoryState(
+            items={k: ItemConfig(
+                item_id=v.item_id,
+                shelf_life=v.shelf_life,
+                name=v.name,
+                demand_multiplier=v.demand_multiplier
+            ) for k, v in self.items.items()},
+            inventory={k: v.copy() for k, v in self.inventory.items()},
+            pipelines={k: v.copy() for k, v in self.pipelines.items()},
+            backorders=self.backorders.copy(),
+            suppliers={k: SupplierConfig(
+                supplier_id=v.supplier_id,
+                lead_time=v.lead_time,
+                unit_cost=v.unit_cost,
+                fixed_cost=v.fixed_cost,
+                capacity=v.capacity,
+                moq=v.moq,
+                items_supplied=v.items_supplied.copy() if v.items_supplied else None,
+                rejection_prob=v.rejection_prob
+            ) for k, v in self.suppliers.items()},
+            crisis_state=self.crisis_state,
+            time_step=self.time_step,
+            exogenous_state=self.exogenous_state.copy() if self.exogenous_state is not None else None
+        )
+
+
+def create_multi_item_state(
+    items: List[Dict],
+    suppliers: List[Dict],
+    initial_inventory: Optional[Dict[int, np.ndarray]] = None,
+    initial_crisis: int = 0
+) -> MultiItemInventoryState:
+    """
+    Factory function to create a multi-item state.
+    
+    Args:
+        items: List of item configurations with keys:
+            - id: Item identifier
+            - shelf_life: Number of expiry buckets
+            - name: Optional item name
+            - demand_multiplier: Optional demand multiplier
+        suppliers: List of supplier configurations with keys:
+            - id: Supplier identifier
+            - lead_time: Delivery lead time
+            - unit_cost: Per-unit cost
+            - items_supplied: Optional list of item IDs (None = all)
+            - rejection_prob: Base rejection probability
+        initial_inventory: Optional {item_id: inventory_array}
+        initial_crisis: Initial crisis level (0, 1, or 2)
+    
+    Returns:
+        Configured MultiItemInventoryState
+    """
+    state = MultiItemInventoryState(crisis_state=initial_crisis)
+    
+    # Add items
+    for item in items:
+        item_id = item['id']
+        state.items[item_id] = ItemConfig(
+            item_id=item_id,
+            shelf_life=item['shelf_life'],
+            name=item.get('name', f'Item_{item_id}'),
+            demand_multiplier=item.get('demand_multiplier', 1.0)
+        )
+        
+        # Initialize inventory
+        if initial_inventory and item_id in initial_inventory:
+            state.inventory[item_id] = np.array(initial_inventory[item_id], dtype=np.float64)
+        else:
+            state.inventory[item_id] = np.zeros(item['shelf_life'], dtype=np.float64)
+        
+        state.backorders[item_id] = 0.0
+    
+    # Add suppliers
+    for supplier in suppliers:
+        supplier_id = supplier['id']
+        state.suppliers[supplier_id] = SupplierConfig(
+            supplier_id=supplier_id,
+            lead_time=supplier['lead_time'],
+            unit_cost=supplier.get('unit_cost', 1.0),
+            fixed_cost=supplier.get('fixed_cost', 0.0),
+            capacity=supplier.get('capacity', float('inf')),
+            moq=supplier.get('moq', 1),
+            items_supplied=supplier.get('items_supplied', None),
+            rejection_prob=supplier.get('rejection_prob', 0.0)
+        )
+        
+        # Create pipelines for each item-supplier pair
+        for item_id in state.items:
+            if state.suppliers[supplier_id].supplies_item(item_id):
+                pipeline = SupplierPipeline(
+                    supplier_id=supplier_id,
+                    lead_time=supplier['lead_time'],
+                    unit_cost=supplier.get('unit_cost', 1.0),
+                    fixed_cost=supplier.get('fixed_cost', 0.0),
+                    capacity=supplier.get('capacity', float('inf')),
+                    moq=supplier.get('moq', 1)
+                )
+                state.pipelines[(item_id, supplier_id)] = pipeline
+    
+    # Initialize exogenous state
+    state.exogenous_state = np.array([0.0, float(initial_crisis)])
+    
+    return state
