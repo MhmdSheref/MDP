@@ -389,13 +389,15 @@ class BenchmarkCallback(BaseCallback):
                     action, _ = policy.predict(obs, deterministic=True)
                 else:
                     # Custom policy interface
-                    # Need to get underlying env state
+                    # Need to get underlying env state via unwrapped
                     if hasattr(self.eval_env, 'envs'):
-                        env = self.eval_env.envs[0]
-                        if hasattr(env, 'current_state') and hasattr(env, 'mdp'):
-                            action_dict = policy.get_action(env.current_state, env.mdp)
-                            # Convert to encoded action (simplified)
-                            action = self._encode_action(env, action_dict)
+                        wrapped_env = self.eval_env.envs[0]
+                        # Access the base env through unwrapped (skips Monitor/TimeLimit)
+                        inner_env = wrapped_env.unwrapped if hasattr(wrapped_env, 'unwrapped') else wrapped_env
+                        if hasattr(inner_env, 'current_state') and hasattr(inner_env, 'mdp'):
+                            action_dict = policy.get_action(inner_env.current_state, inner_env.mdp)
+                            # Convert to encoded action
+                            action = self._encode_action(inner_env, action_dict)
                         else:
                             action = self.eval_env.action_space.sample()
                     else:
