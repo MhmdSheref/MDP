@@ -354,7 +354,9 @@ class BenchmarkCallback(BaseCallback):
                 sys.stderr.flush()
         
         except Exception as e:
-            # Silently log error to avoid cascading issues
+            # Log error with traceback
+            import traceback
+            traceback.print_exc()
             self.logger.record("benchmark/error", str(e))
     
     def _evaluate_policy(
@@ -417,7 +419,10 @@ class BenchmarkCallback(BaseCallback):
                 steps += 1
                 
                 if isinstance(done, np.ndarray):
-                    done = done[0]
+                    if done.ndim == 0:
+                        done = bool(done)
+                    else:
+                        done = done[0]
             
             total_costs.append(episode_cost)
             fill_rate = episode_sales / max(episode_demand, 1e-6)
@@ -435,13 +440,27 @@ class BenchmarkCallback(BaseCallback):
         """Convert policy action dict to environment action."""
         # This is a simplified encoding - matches gym_env_v2 decoding logic
         action = []
-        for sid in env.supplier_order:
+        # Check if we can access supplier_order
+        if not hasattr(env, 'supplier_order'):
+            # Try unwrapped
+            if hasattr(env, 'unwrapped') and hasattr(env.unwrapped, 'supplier_order'):
+                supplier_order = env.unwrapped.supplier_order
+                supplier_action_bins = env.unwrapped.supplier_action_bins
+            else:
+                 # Fallback
+                 return self.eval_env.action_space.sample()
+        else:
+            supplier_order = env.supplier_order
+            supplier_action_bins = env.supplier_action_bins
+            
+        for sid in supplier_order:
             qty = action_dict.get(sid, 0)
-            bins = env.supplier_action_bins[sid]
+            bins = supplier_action_bins[sid]
             # Find closest bin
             idx = np.argmin(np.abs(np.array(bins) - qty))
-            action.append(idx)
-        return np.array([action])
+            action.append(int(idx))
+            
+        return np.array([action], dtype=np.int64)
 
 
 def create_lr_schedule(

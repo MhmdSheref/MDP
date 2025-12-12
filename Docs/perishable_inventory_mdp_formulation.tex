@@ -1,0 +1,635 @@
+\documentclass[twocolumn]{article}
+
+%% ============================================================================
+%% PACKAGES
+%% ============================================================================
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{bm}
+\usepackage{hyperref}
+\usepackage{cleveref}
+
+\geometry{margin=0.75in}
+
+%% ============================================================================
+%% NOTATION CONVENTIONS
+%% ============================================================================
+% Random variables: uppercase (I_t, D_t, X_t)
+% Realizations: lowercase (i_t, d_t, x_t)
+% Sets: calligraphic (\mathcal{X}, \mathcal{A})
+% Parameters: lowercase Greek or Latin (γ, λ, N, L_s)
+
+\title{%
+\textbf{Mathematical Model and Reinforcement Learning Framework\\
+for Multi-Supplier Perishable Pharmaceutical Inventory Control}
+}
+\author{Technical Documentation}
+\date{}
+
+\begin{document}
+\maketitle
+
+%% ============================================================================
+%% SECTION I: THE PERISHABLE INVENTORY MDP ENVIRONMENT
+%% ============================================================================
+\section{The Perishable Inventory MDP Environment}
+\label{sec:mdp}
+
+We formulate the perishable pharmaceutical inventory control problem as a discounted infinite-horizon Markov Decision Process~\cite{puterman2014markov} $\mathcal{M} = (\mathcal{X}, \mathcal{A}, \mathcal{P}, \mathcal{R}, \gamma)$.
+
+\paragraph{Notation Convention.} Throughout this document, we use uppercase letters (e.g., $I_t$, $D_t$, $X_t$) to denote random variables and lowercase letters (e.g., $i_t$, $d_t$, $x_t$) to denote their realizations. Sets are denoted in calligraphic script ($\mathcal{X}$, $\mathcal{A}$, $\mathcal{S}$).
+
+\subsection{Time and Sets}
+\label{sec:time_sets}
+
+Let $t \in \mathbb{N}_0 = \{0, 1, 2, \ldots\}$ denote the discrete time index representing planning periods. We define the following fundamental sets:
+\begin{itemize}
+    \item $\mathcal{S} = \{0, 1, \ldots, S-1\}$: Set of suppliers, with $|\mathcal{S}| = S$.
+    \item $N \in \mathbb{N}$: Shelf-life of the perishable product (periods before expiration).
+    \item $L_s \in \mathbb{N}$: Deterministic lead-time for supplier $s \in \mathcal{S}$.
+\end{itemize}
+
+\subsection{State Space $\mathcal{X}$}
+\label{sec:state_space}
+
+The complete state random vector at time $t$ is:
+\begin{equation}
+\label{eq:state}
+X_t = \left( I_t, \{P_t^{(s)}\}_{s \in \mathcal{S}}, B_t, Z_t \right) \in \mathcal{X}
+\end{equation}
+
+\subsubsection{On-Hand Inventory $I_t$}
+
+The on-hand inventory is tracked by remaining shelf-life buckets:
+\begin{equation}
+\label{eq:inventory}
+I_t = \left( I_t^{(1)}, I_t^{(2)}, \ldots, I_t^{(N)} \right) \in \mathbb{R}_{\geq 0}^{N}
+\end{equation}
+where $I_t^{(n)}$ represents inventory with exactly $n$ periods remaining before expiration. Bucket $n=1$ contains the oldest (most urgent) inventory, while $n=N$ contains the freshest.
+
+\subsubsection{Pipeline Vectors $P_t^{(s)}$}
+
+For each supplier $s \in \mathcal{S}$, the pipeline vector tracks orders in transit:
+\begin{equation}
+\label{eq:pipeline}
+P_t^{(s)} = \left( P_t^{(s,1)}, P_t^{(s,2)}, \ldots, P_t^{(s,L_s)} \right) \in \mathbb{R}_{\geq 0}^{L_s}
+\end{equation}
+where $P_t^{(s,\ell)}$ denotes the quantity from supplier $s$ arriving in $\ell$ periods. Specifically, $P_t^{(s,1)}$ arrives at the beginning of period $t$.
+
+\paragraph{Scheduled Supply.} Additionally, we track scheduled (contractually committed) supply $\tilde{P}_t^{(s)} \in \mathbb{R}_{\geq 0}^{L_s}$, representing pre-committed orders (e.g., standing contracts, automatic replenishment agreements) that are not decision variables at time $t$. This distinction allows modeling of hybrid procurement strategies.
+
+\subsubsection{Backorders and Exogenous State}
+
+The cumulative unfulfilled demand is $B_t \in \mathbb{R}_{\geq 0}$. The exogenous state $Z_t \in \mathbb{R}^{d_z}$ captures external factors influencing demand:
+\begin{equation}
+\label{eq:exogenous}
+Z_t = \left( \phi_t, \kappa_t, \ldots \right)^{\top}
+\end{equation}
+where $\phi_t \in [0, 2\pi)$ encodes seasonal phase and $\kappa_t \in \{0, 1, 2\}$ represents crisis level (normal, elevated, crisis).
+
+\subsubsection{Derived Quantities}
+
+The \textit{inventory position} combines on-hand, pipeline, and backorders:
+\begin{equation}
+\label{eq:inv_position}
+IP_t = \left( \sum_{n=1}^{N} I_t^{(n)} + \sum_{s \in \mathcal{S}} \sum_{\ell=1}^{L_s} \left( P_t^{(s,\ell)} + \tilde{P}_t^{(s,\ell)} \right) \right) - B_t
+\end{equation}
+
+\paragraph{Survival-Adjusted Inventory Position.} Following the perishable inventory literature~\cite{nahmias2011perishable}, the survival probability $\rho_n \in [0,1]$ represents the likelihood that inventory with $n$ remaining periods will be consumed before expiry. We estimate $\rho_n$ using the probability that cumulative demand over $n$ periods exceeds zero:
+\begin{equation}
+\label{eq:survival_prob}
+\rho_n = \mathbb{P}\left( \sum_{k=1}^{n} D_k > 0 \right) = 1 - \mathbb{P}(D_1 = 0)^n
+\end{equation}
+For Poisson demand with rate $\lambda$, this simplifies to $\rho_n = 1 - e^{-n\lambda}$. When demand history is available, $\rho_n$ can be calibrated empirically from observed consumption patterns. The survival-adjusted inventory position is:
+\begin{equation}
+\label{eq:surv_inv_position}
+IP_t^{surv} = \sum_{n=1}^{N} \rho_n \cdot I_t^{(n)}
+\end{equation}
+
+\subsubsection{State Space Dimension}
+
+The total state dimension for the vectorized representation is:
+\begin{equation}
+\label{eq:state_dim}
+d_{\mathcal{X}} = N + \sum_{s \in \mathcal{S}} L_s + 1 + d_z
+\end{equation}
+where $N$ is the number of inventory buckets, $\sum_s L_s$ is the total pipeline dimension, $1$ accounts for backorders, and $d_z$ is the exogenous state dimension.
+
+\subsection{Action Space $\mathcal{A}$}
+\label{sec:action_space}
+
+At each period $t$, the decision-maker selects an order vector:
+\begin{equation}
+\label{eq:action}
+a_t = \left( a_t^{(0)}, a_t^{(1)}, \ldots, a_t^{(S-1)} \right) \in \mathcal{A}(X_t)
+\end{equation}
+where $a_t^{(s)} \geq 0$ is the order quantity from supplier $s$.
+
+\subsubsection{Order Constraints}
+
+Each supplier imposes structural constraints:
+\begin{align}
+\label{eq:capacity}
+&a_t^{(s)} \leq U_s && \text{(Capacity constraint)} \\
+\label{eq:moq}
+&a_t^{(s)} \in \{0\} \cup \{M_s \cdot k : k \in \mathbb{N}\} && \text{(MOQ constraint)}
+\end{align}
+where $U_s$ is the maximum order capacity and $M_s$ is the minimum order quantity for supplier $s$.
+
+\subsubsection{Fixed Cost Trigger}
+
+The fixed ordering cost indicator:
+\begin{equation}
+\label{eq:fixed_cost_trigger}
+y_t^{(s)} = \mathbb{1}\{a_t^{(s)} > 0\}
+\end{equation}
+
+\subsection{Demand and Transitions}
+\label{sec:transitions}
+
+\subsubsection{Stochastic Demand}
+
+Demand follows a conditional distribution:
+\begin{equation}
+\label{eq:demand}
+D_t \sim F(\cdot \mid Z_t)
+\end{equation}
+
+The implementation supports multiple demand processes:
+\begin{itemize}
+    \item \textbf{Poisson}: $D_t \sim \text{Poisson}(\lambda(Z_t))$ with $\mathbb{E}[D_t] = \text{Var}[D_t] = \lambda(Z_t)$.
+    \item \textbf{Negative Binomial}: $D_t \sim \text{NegBin}(r, p(Z_t))$ for overdispersed demand where $\text{Var}[D_t] > \mathbb{E}[D_t]$.
+    \item \textbf{Composite}: Combines base rate $\lambda_0$, seasonal amplitude $A_s$, spike probability $p_{spike}$, and crisis multiplier $m_{\kappa}$:
+    \begin{equation*}
+    \lambda(Z_t) = \lambda_0 \cdot (1 + A_s \sin(\phi_t)) \cdot m_{\kappa_t} \cdot (1 + \xi_t \cdot (s_{mult} - 1))
+    \end{equation*}
+    where $\xi_t \sim \text{Bernoulli}(p_{spike})$. While spikes are modeled as independent draws, correlated or persistent crises (common in pharmaceutical supply chains) can be generated by treating $\kappa_t$ as a two-state Markov chain rather than independent Bernoulli—the exogenous state $Z_t$ already accommodates this extension.
+\end{itemize}
+
+\subsubsection{Sequence of Events}
+\label{sec:sequence_events}
+
+The transition from period $t$ to $t+1$ follows the event sequence in \cref{alg:transition}. Let $d_t$ denote the realized demand.
+
+\begin{algorithm}[t]
+\caption{Period Transition Dynamics}
+\label{alg:transition}
+\begin{algorithmic}[1]
+\State \textbf{Input:} State $x_t = (i_t, \{p_t^{(s)}\}, b_t, z_t)$, action $a_t$
+\State \textbf{Sample} demand $d_t \sim F(\cdot \mid z_t)$
+\Statex \Comment{Step 1: Arrivals}
+\State $A_t \gets \sum_{s \in \mathcal{S}} \left( p_t^{(s,1)} + \tilde{p}_t^{(s,1)} \right)$
+\State $i_t^{(N)} \gets i_t^{(N)} + A_t$
+\Statex \Comment{Step 2: FIFO Demand Service}
+\State $R \gets d_t + b_t$ \Comment{Total requirement}
+\For{$n = 1$ to $N$}
+    \State $\text{take}_n \gets \min(i_t^{(n)}, R)$
+    \State $i_t^{(n)} \gets i_t^{(n)} - \text{take}_n$
+    \State $R \gets R - \text{take}_n$
+\EndFor
+\State $\textit{sales}_t \gets d_t + b_t - R$; \quad $b_t^{new} \gets \max(R, 0)$
+\Statex \Comment{Step 3: Cost Calculation (see \cref{sec:reward})}
+\Statex \Comment{Step 4: Aging and Spoilage}
+\State $\text{Spoiled}_t \gets i_t^{(1)}$
+\For{$n = 1$ to $N-1$}
+    \State $i_{t+1}^{(n)} \gets i_t^{(n+1)}$
+\EndFor
+\State $i_{t+1}^{(N)} \gets 0$
+\Statex \Comment{Step 5: Pipeline Shift}
+\For{each $s \in \mathcal{S}$}
+    \For{$\ell = 1$ to $L_s - 1$}
+        \State $p_{t+1}^{(s,\ell)} \gets p_t^{(s,\ell+1)}$
+    \EndFor
+    \State $p_{t+1}^{(s,L_s)} \gets a_t^{(s)}$
+    \Statex \Comment{Scheduled supply update}
+    \State $\tilde{p}_{t+1}^{(s,\ell)} \gets \tilde{p}_t^{(s,\ell+1)}$; $\tilde{p}_{t+1}^{(s,L_s)} \gets 0$
+\EndFor
+\Statex \Comment{Step 6: Backorder Update}
+\State $b_{t+1} \gets b_t^{new}$
+\State \textbf{Return} $x_{t+1}$, costs
+\end{algorithmic}
+\end{algorithm}
+
+\subsubsection{Aging Dynamics}
+
+Inventory aging can be expressed in matrix form. Define the aging matrix $\mathbf{A}_{age} \in \mathbb{R}^{N \times N}$:
+\begin{equation}
+\label{eq:aging_matrix}
+(\mathbf{A}_{age})_{i,j} = \begin{cases}
+1 & \text{if } i = j - 1 \text{ for } j \in \{2, \ldots, N\} \\
+0 & \text{otherwise}
+\end{cases}
+\quad \text{for } i,j \in \{1,\ldots,N\}
+\end{equation}
+This is a sub-diagonal matrix where row $i$ receives the content of column $i+1$. The aging operation (after demand service, before new arrivals) yields:
+\begin{equation}
+\label{eq:aging_op}
+\mathbf{i}_{t+1}^{aged} = \mathbf{A}_{age} \, \mathbf{i}_t
+\end{equation}
+where $\mathbf{i}_t = (i_t^{(1)}, \ldots, i_t^{(N)})^{\top}$. Spoilage is $\text{Spoiled}_t = i_t^{(1)}$, and the freshest bucket is reset: $i_{t+1}^{(N)} = 0$.
+
+\subsubsection{Stochastic Lead Times}
+\label{sec:stochastic_lt}
+
+For suppliers with uncertain delivery times, we model lead-time variability as follows. Let $\Xi_t^{(s)} \in \{0, 1, \ldots, \Delta_{max}\}$ be the random delay for supplier $s$ at time $t$. We support two models:
+
+\paragraph{Bernoulli Advancement.} Pipeline advances with probability $p_s$:
+\begin{equation}
+\label{eq:bernoulli_lt}
+\xi_t^{(s)} \sim \text{Bernoulli}(p_s)
+\end{equation}
+If $\xi_t^{(s)} = 1$, the pipeline shifts normally; if $\xi_t^{(s)} = 0$, orders remain stationary. This is a simplification for faster simulation; note that with low $p_s$, orders may take arbitrarily long to arrive. For production use, the Markovian model below provides more realistic dynamics with bounded delays.
+
+\paragraph{Markovian Lead Times.} For more realistic dynamics, define a transition matrix $\bm{\Pi}^{(s)} \in [0,1]^{L_s \times L_s}$ where $\Pi^{(s)}_{\ell, \ell'}$ is the probability that an order at position $\ell$ moves to position $\ell'$. Standard deterministic lead times correspond to $\Pi^{(s)}_{\ell, \ell-1} = 1$ for $\ell \geq 2$.
+
+%% ============================================================================
+%% SECTION II: REINFORCEMENT LEARNING FORMULATION
+%% ============================================================================
+\section{Reinforcement Learning Formulation}
+\label{sec:rl}
+
+\subsection{Reward Function $\mathcal{R}$}
+\label{sec:reward}
+
+The one-step cost at time $t$ is the sum of component costs:
+\begin{equation}
+\label{eq:total_cost}
+c(X_t, a_t) = C_t^{purch} + C_t^{hold} + C_t^{short} + C_t^{spoil}
+\end{equation}
+
+\subsubsection{Purchase Costs}
+
+Variable and fixed ordering costs:
+\begin{equation}
+\label{eq:purchase_cost}
+C_t^{purch} = \sum_{s \in \mathcal{S}} \left( v_s \cdot a_t^{(s)} + K_s \cdot y_t^{(s)} \right)
+\end{equation}
+where $v_s$ is the unit cost and $K_s$ is the fixed ordering cost for supplier $s$. When $K_s = 0$ for all $s$, this simplifies to a pure variable cost model.
+
+\subsubsection{Holding Costs}
+
+Age-dependent holding costs incentivize consuming older inventory:
+\begin{equation}
+\label{eq:holding_cost}
+C_t^{hold} = \sum_{n=1}^{N} h_n \cdot \hat{I}_t^{(n)}
+\end{equation}
+where $\hat{I}_t^{(n)}$ is inventory after demand service and $h_n$ follows:
+\begin{equation}
+\label{eq:holding_structure}
+h_n = h_{base} + h_{prem} \cdot \frac{N - n}{N}
+\end{equation}
+This structure assigns higher holding costs to older inventory ($n$ small). While some blood-bank literature uses lower holding costs for older units (since they approach expiry anyway), higher costs for older pharmaceutical inventory reflect increased regulatory risk, opportunity cost of capital tied up in aging stock, and intensified monitoring requirements for temperature-sensitive products nearing their expiration window.
+
+\subsubsection{Shortage Costs}
+
+Backorder penalty:
+\begin{equation}
+\label{eq:shortage_cost}
+C_t^{short} = b \cdot B_t^{new}
+\end{equation}
+where $b$ is the per-unit shortage cost.
+
+\subsubsection{Spoilage Costs}
+
+Wastage penalty:
+\begin{equation}
+\label{eq:spoilage_cost}
+C_t^{spoil} = w \cdot \text{Spoiled}_t
+\end{equation}
+where $w$ is the per-unit spoilage cost.
+
+\subsubsection{Immediate Reward}
+
+The immediate reward for RL is the negative cost:
+\begin{equation}
+\label{eq:reward}
+R(X_t, a_t) = -c(X_t, a_t)
+\end{equation}
+
+\subsection{Cost Parameters}
+
+\begin{table}[h]
+\centering
+\caption{Cost and MDP Parameters}
+\label{tab:params}
+\begin{tabular}{@{}clc@{}}
+\toprule
+Symbol & Description & Typical \\
+\midrule
+$v_s$ & Unit purchase cost (supplier $s$) & $1.0$--$2.0$ \\
+$K_s$ & Fixed ordering cost$^*$ & $0$--$100$ \\
+$h_{base}$ & Base holding cost & $0.5$ \\
+$h_{prem}$ & Age premium & $0.5$ \\
+$b$ & Shortage cost per unit & $10.0$ \\
+$w$ & Spoilage cost per unit & $5.0$ \\
+$\gamma$ & Discount factor & $0.99$ \\
+\bottomrule
+\multicolumn{3}{l}{\footnotesize $^*$ $K_s = 0$ yields pure variable cost; $K_s \in [20, 100]$ is typical}
+\end{tabular}
+\end{table}
+
+\subsection{Optimality Criterion}
+\label{sec:optimality}
+
+The objective is to find a policy $\pi: \mathcal{X} \rightarrow \mathcal{A}$ that minimizes expected discounted cost. The optimal value function satisfies the Bellman optimality equation:
+\begin{equation}
+\label{eq:bellman}
+V^*(x) = \min_{a \in \mathcal{A}(x)} \left\{ c(x, a) + \gamma \, \mathbb{E}_{X'} \left[ V^*(X') \mid X=x, a \right] \right\}
+\end{equation}
+where the expectation $\mathbb{E}_{X'}[\cdot \mid X=x, a]$ is taken over the next state $X'$ induced by stochastic demand $D_t \sim F(\cdot \mid z_t)$ and any lead-time randomness.
+
+The optimal policy is:
+\begin{equation}
+\label{eq:optimal_policy}
+\pi^*(x) = \arg\min_{a \in \mathcal{A}(x)} \left\{ c(x, a) + \gamma \, \mathbb{E}_{X'} \left[ V^*(X') \mid X=x, a \right] \right\}
+\end{equation}
+
+%% ============================================================================
+%% SECTION III: TRAINING AND POLICY APPROXIMATION
+%% ============================================================================
+\section{Training and Policy Approximation}
+\label{sec:training}
+
+\subsection{RL Algorithm}
+\label{sec:ppo}
+
+We employ \textbf{Proximal Policy Optimization (PPO)}~\cite{schulman2017proximal}, an actor-critic algorithm with:
+\begin{itemize}
+    \item Stable training via clipped surrogate objective
+    \item Sample-efficient on-policy learning
+    \item Robust hyperparameter sensitivity
+\end{itemize}
+
+\subsubsection{Policy Parameterization}
+
+The stochastic policy $\pi_\theta(a \mid x)$ outputs a product of independent categorical distributions for each supplier's order quantity:
+\begin{equation}
+\label{eq:policy_param}
+\pi_\theta(a \mid x) = \prod_{s \in \mathcal{S}} \text{Cat}\left( a^{(s)}; \text{softmax}(f_\theta^{(s)}(x)) \right)
+\end{equation}
+where $f_\theta^{(s)}(x)$ are logits from the policy network for supplier $s$.
+
+\subsection{Policy Architecture}
+\label{sec:architecture}
+
+The policy network is a Multi-Layer Perceptron (MLP):
+
+\subsubsection{Network Structure}
+\begin{itemize}
+    \item \textbf{Input Layer}: State vector $\mathbf{o}_t \in \mathbb{R}^{d_{\mathcal{O}}}$ (see \cref{sec:obs_space}).
+    
+    \item \textbf{Hidden Layers}: Two fully-connected layers with $256$ units each and ReLU activation.
+    
+    \item \textbf{Output Heads}: 
+    \begin{itemize}
+        \item \textit{Policy}: Softmax over discrete action bins per supplier
+        \item \textit{Value}: Single scalar $V_\phi(x)$
+    \end{itemize}
+\end{itemize}
+
+\subsubsection{Observation Space Design}
+\label{sec:obs_space}
+
+The observation vector includes normalized, cost-aware features structured for a fixed maximum of $S_{max}$ suppliers and $N_{max}$ shelf-life:
+\begin{align}
+\label{eq:obs}
+\mathbf{o}_t = \Big[ &\underbrace{\frac{\mathbf{i}_t}{I_{max}}}_{N_{max}}, \underbrace{\frac{\mathbf{p}_t}{U_{max}}}_{L^{tot}_{max}}, \underbrace{\frac{b_t}{2\bar{D}}}_{1}, \underbrace{\frac{\mathbf{v}}{\max(\mathbf{v})}}_{S_{max}}, \underbrace{\frac{\mathbf{L}}{L_{max}}}_{S_{max}}, \notag \\
+&\underbrace{\mathbf{c}_{crisis}}_{3}, \underbrace{\mathbf{d}_{contract}}_{S_{max}}, \underbrace{\mathbf{f}_{time}}_{2}, \underbrace{\frac{\mathbf{h}_D}{2\bar{D}}}_{H} \Big]
+\end{align}
+
+\paragraph{Normalization Parameters.} The scaling constants are: $I_{max}$ = maximum storage capacity (default: 200 units), $U_{max} = \max_s U_s$ = maximum supplier ordering capacity, $L_{max} = \max_s L_s$ = maximum lead time, $L^{tot}_{max} = \sum_s L_s$ = total pipeline dimension, and $\bar{D}$ = average demand estimated from the demand process. The factor of 2 in $b_t/(2\bar{D})$ and $\mathbf{h}_D/(2\bar{D})$ ensures typical values remain in the range $[0,1]$ under normal operating conditions. The terms $\mathbf{c}_{crisis}$ is a one-hot crisis encoding, $\mathbf{f}_{time} = (\sin(2\pi t/T), \cos(2\pi t/T))$ encodes seasonality with period $T$, and $\mathbf{h}_D$ is demand history of length $H$.
+
+The total observation dimension is:
+\begin{equation}
+\label{eq:obs_dim}
+d_{\mathcal{O}} = N_{max} + L^{tot}_{max} + 1 + 3S_{max} + 3 + 2 + H
+\end{equation}
+
+\subsubsection{Action Space Design}
+\label{sec:action_design}
+
+The action space is \texttt{MultiDiscrete}$([n_0, n_1, \ldots, n_{S_{max}-1}])$ with asymmetric bins. To respect MOQ constraints \Cref{eq:moq}, action bins are constructed as MOQ multiples:
+\begin{align}
+\label{eq:action_bins}
+&\text{Slow (cheap) supplier}: [0, M_s, 2M_s, \ldots, 6M_s] \\
+&\text{Fast (expensive) supplier}: [0, M_s, 2M_s, \ldots, 4M_s] \notag
+\end{align}
+
+\paragraph{Rationale.} The slow supplier receives 7 action levels (up to $6M_s$) to cover the typical base-demand range, as this supplier handles routine replenishment at lower cost. The fast supplier is limited to 5 levels (up to $4M_s$) since it serves emergency and surge needs only. This asymmetric design encourages learning TBS-like policies where the cheap supplier dominates ordering volume. Actions for padded (non-existent) suppliers are ignored.
+
+\paragraph{Invalid Action Masking.} Following modern PPO implementations (e.g., Stable-Baselines3, CleanRL), invalid actions violating capacity constraints or MOQ requirements are masked by setting their logits to $-\infty$ before the softmax, ensuring zero probability mass on infeasible orders.
+
+\subsection{Training Objective}
+\label{sec:objective}
+
+\subsubsection{PPO Clipped Objective}
+
+The policy is updated to maximize:
+\begin{equation}
+\label{eq:ppo_clip}
+\mathcal{L}^{CLIP}(\theta) = \hat{\mathbb{E}}_t \left[ \min\left( r_t(\theta) \hat{A}_t, \text{clip}(r_t(\theta), 1-\epsilon, 1+\epsilon) \hat{A}_t \right) \right]
+\end{equation}
+where $r_t(\theta) = \frac{\pi_\theta(a_t \mid x_t)}{\pi_{\theta_{old}}(a_t \mid x_t)}$ is the probability ratio and $\hat{A}_t$ is the advantage estimate.
+
+\subsubsection{Generalized Advantage Estimation (GAE)}
+
+The advantage is estimated using GAE~\cite{schulman2016high}:
+\begin{equation}
+\label{eq:gae}
+\hat{A}_t^{GAE(\gamma, \lambda)} = \sum_{k=0}^{\infty} (\gamma \lambda)^k \delta_{t+k}
+\end{equation}
+where $\delta_t = r_t + \gamma V_\phi(x_{t+1}) - V_\phi(x_t)$ is the TD residual, and $\lambda \in [0,1]$ controls the bias-variance trade-off. We use $\lambda = 0.95$.
+
+\subsubsection{Value Function Loss}
+
+The critic is trained via mean squared error:
+\begin{equation}
+\label{eq:value_loss}
+\mathcal{L}^{VF}(\phi) = \hat{\mathbb{E}}_t \left[ \left( V_\phi(x_t) - V_t^{target} \right)^2 \right]
+\end{equation}
+
+\subsubsection{Entropy Bonus}
+
+An entropy term encourages exploration:
+\begin{equation}
+\label{eq:entropy}
+\mathcal{L}^{ENT}(\theta) = c_{ent} \cdot \hat{\mathbb{E}}_t \left[ H[\pi_\theta(\cdot \mid x_t)] \right]
+\end{equation}
+
+\subsubsection{Combined Objective}
+
+\begin{equation}
+\label{eq:total_loss}
+\mathcal{L}(\theta, \phi) = \mathcal{L}^{CLIP}(\theta) - c_1 \mathcal{L}^{VF}(\phi) + \mathcal{L}^{ENT}(\theta)
+\end{equation}
+
+\subsection{Reward Shaping}
+\label{sec:reward_shaping}
+
+Following standard RL practice~\cite{sutton2018reinforcement}, the shaped reward decomposes costs with configurable weights:
+\begin{equation}
+\label{eq:shaped_reward}
+R_{shaped} = -\alpha \cdot C^{purch} - \beta \cdot (C^{hold} + C^{spoil}) - \zeta \cdot C^{short} + \delta \cdot \text{bonus}
+\end{equation}
+The service bonus uses a continuous formulation to avoid sparse rewards:
+\begin{equation}
+\label{eq:bonus}
+\text{bonus} = \textit{sales}_t \cdot \text{clip}(\text{fill\_rate} - 0.9, 0, 0.1) \times 10
+\end{equation}
+This provides a smooth gradient for fill rates between 90\% and 100\%.
+
+\paragraph{Weight Selection.} The weights $(\alpha, \beta, \zeta, \delta)$ are hyperparameters tuned via grid search over $[0.1, 0.5]^4$ to maximize validation performance. Default values are $(\alpha, \beta, \zeta, \delta) = (0.5, 0.3, 0.2, 0.1)$, prioritizing procurement efficiency.
+
+\subsection{Curriculum Learning}
+\label{sec:curriculum}
+
+Following the curriculum learning paradigm~\cite{bengio2009curriculum}, training progresses through environments of increasing complexity:
+
+\begin{table}[h]
+\centering
+\caption{Curriculum Levels and Advancement Thresholds$^\dagger$}
+\label{tab:curriculum}
+\begin{tabular}{@{}llc@{}}
+\toprule
+Level & Characteristics & Threshold \\
+\midrule
+Simple & 2 suppliers, $L \leq 3$, stationary & $\bar{R} \geq -5.0$ \\
+Moderate & 2--5 suppliers, seasonal & $\bar{R} \geq -8.0$ \\
+Complex & 5--10 suppliers, spikes & $\bar{R} \geq -12.0$ \\
+Extreme & 10--15 suppliers, crisis & --- \\
+\bottomrule
+\multicolumn{3}{l}{\footnotesize $^\dagger$ Thresholds are environment-specific; adjust for different cost scales.}
+\end{tabular}
+\end{table}
+
+Advancement occurs when the exponential moving average reward $\bar{R}$ (window=100 episodes) exceeds the level threshold, and at least 50 episodes have been completed at the current level.
+
+\subsection{Training Schedules}
+\label{sec:schedules}
+
+\subsubsection{Learning Rate Annealing}
+
+Linear decay from initial to final learning rate:
+\begin{equation}
+\label{eq:lr_schedule}
+\alpha_t = \alpha_0 - (\alpha_0 - \alpha_f) \cdot \frac{t}{T}
+\end{equation}
+with $\alpha_0 = 3 \times 10^{-4}$ and $\alpha_f = 0$ over $T = 5 \times 10^6$ steps.
+
+\subsubsection{Entropy Coefficient Decay}
+
+\begin{equation}
+\label{eq:ent_schedule}
+c_{ent}(t) = c_{ent}^{(0)} - (c_{ent}^{(0)} - c_{ent}^{(f)}) \cdot \frac{t}{T}
+\end{equation}
+with $c_{ent}^{(0)} = 0.01$ and $c_{ent}^{(f)} = 0.001$.
+
+\subsection{Baseline Policies}
+\label{sec:baselines}
+
+\subsubsection{Tailored Base-Surge (TBS)}
+
+The TBS policy~\cite{allon2010global} allocates orders between a slow (cheap) supplier $s_{slow}$ and fast (expensive) supplier $s_{fast}$. Define:
+\begin{itemize}
+    \item $S^*$: Base-stock level for slow supplier
+    \item $r$: Reorder point for surge orders
+    \item $IP_t^{slow}$: Inventory position including only $s_{slow}$ pipeline
+    \item $q_{max}$: Maximum surge order quantity
+\end{itemize}
+
+The policy is:
+\begin{align}
+\label{eq:tbs}
+a_t^{slow} &= \max\left(0, S^* - IP_t^{slow}\right) \\
+a_t^{fast} &= \begin{cases}
+\min\left(r - IP_t, q_{max}\right) & \text{if } IP_t < r \\
+0 & \text{otherwise}
+\end{cases} \notag
+\end{align}
+
+Parameters are derived from demand forecasts:
+\begin{align}
+\label{eq:tbs_params}
+S^* &= \mu_D \cdot L_{slow} + z_\alpha \cdot \sigma_D \sqrt{L_{slow}} \\
+r &= \mu_D \cdot L_{fast} + z_\alpha \cdot \sigma_D \sqrt{L_{fast}} \notag
+\end{align}
+where $z_\alpha = \Phi^{-1}(\alpha)$ for target service level $\alpha$.
+
+\subsubsection{Base-Stock Policy (Single-Supplier Benchmark)}
+
+For comparison, a single-supplier base-stock policy orders to target level $S^*$:
+\begin{equation}
+\label{eq:basestock}
+a_t = \max(0, S^* - IP_t)
+\end{equation}
+with $S^* = \mu_D \cdot L + z_\alpha \cdot \sigma_D \sqrt{L}$. This serves as a simplified benchmark; for multi-supplier settings, orders are allocated to the cheapest supplier.
+
+\subsection{Value Iteration (Small State Spaces)}
+\label{sec:vi}
+
+For smaller discretized state spaces, classical Value Iteration~\cite{puterman2014markov} applies:
+\begin{equation}
+\label{eq:vi}
+V_{k+1}(x) = \min_{a \in \mathcal{A}(x)} \left\{ c(x, a) + \gamma \sum_{x'} P(x' \mid x, a) V_k(x') \right\}
+\end{equation}
+with convergence when $\|V_{k+1} - V_k\|_\infty < \epsilon$.
+
+The transition expectation is approximated via Monte Carlo:
+\begin{equation}
+\label{eq:mc_expectation}
+\mathbb{E}[V(X') \mid x, a] \approx \frac{1}{M} \sum_{i=1}^{M} V(x'_i)
+\end{equation}
+where $x'_i$ results from demand sample $d^{(i)} \sim F(\cdot \mid z)$.
+
+\paragraph{Curse of Dimensionality.} For typical problems with $N \geq 10$, $S \geq 3$, and continuous demand, the state space size ($|\mathcal{X}| = O(I_{max}^N \cdot U_{max}^{\sum_s L_s})$) makes exact VI computationally prohibitive. However, the \textit{effective reachable} state space is substantially smaller than this theoretical bound due to MOQ constraints, supplier capacity limits, and the scale of typical demand relative to inventory capacity—many authors report reachable state fractions below 0.01\% of the theoretical maximum. Nonetheless, even this reduced space remains intractable for exact methods. This VI formulation is included primarily for small-scale validation and pedagogical purposes; the RL approach (\Cref{sec:ppo}) is required for realistic problem sizes.
+
+%% ============================================================================
+%% REFERENCES
+%% ============================================================================
+\begin{thebibliography}{9}
+
+\bibitem{schulman2017proximal}
+J.~Schulman, F.~Wolski, P.~Dhariwal, A.~Radford, and O.~Klimov,
+``Proximal policy optimization algorithms,''
+\textit{arXiv preprint arXiv:1707.06347}, 2017.
+
+\bibitem{schulman2016high}
+J.~Schulman, P.~Moritz, S.~Levine, M.~Jordan, and P.~Abbeel,
+``High-dimensional continuous control using generalized advantage estimation,''
+\textit{arXiv preprint arXiv:1506.02438}, 2016.
+
+\bibitem{allon2010global}
+G.~Allon and J.~A.~Van~Mieghem,
+``Global dual sourcing: Tailored base-surge allocation to near- and offshore production,''
+\textit{Management Science}, vol.~56, no.~1, pp.~110--124, 2010.
+
+\bibitem{puterman2014markov}
+M.~L.~Puterman,
+\textit{Markov Decision Processes: Discrete Stochastic Dynamic Programming}.
+John Wiley \& Sons, 2014.
+
+\bibitem{nahmias2011perishable}
+S.~Nahmias,
+``Perishable inventory systems,''
+\textit{International Series in Operations Research \& Management Science}, vol.~160, Springer, 2011.
+
+\bibitem{sutton2018reinforcement}
+R.~S.~Sutton and A.~G.~Barto,
+\textit{Reinforcement Learning: An Introduction}, 2nd ed.
+MIT Press, 2018.
+
+\bibitem{bengio2009curriculum}
+Y.~Bengio, J.~Louradour, R.~Collobert, and J.~Weston,
+``Curriculum learning,''
+\textit{Proc. 26th International Conference on Machine Learning (ICML)}, pp.~41--48, 2009.
+
+\end{thebibliography}
+
+\end{document}
